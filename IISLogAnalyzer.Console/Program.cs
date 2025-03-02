@@ -36,6 +36,7 @@ namespace IISLogAnalyzer.Console
                     await context.Database.EnsureDeletedAsync();
                 }
 
+        
                 await context.Database.EnsureCreatedAsync();
 
                 var logFolders = opts.LogFolders.Split(',')

@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "Afterburner 1": {
+      "commandName": "Project",
+      "commandLineArgs": "-l \"C:\\AI\\log-analyzer\\www8logs\\AfterBurner\\W3SVC16\\\" -r --output \"C:\\AI\\log-analyzer\\\" --rebuild -d",
+      "sqlDebugging": true
+    },
+    "AB no rebuild": {
+      "commandName": "Project",
+      "commandLineArgs": "-l C:\\AI\\log-analyzer\\www8logs\\AfterBurner\\W3SVC16\\ -r -d"
+    }
+  }
+}

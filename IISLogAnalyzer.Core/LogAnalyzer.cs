@@ -150,16 +150,16 @@ namespace IISLogAnalyzer.Core
                 query = query.Where(e => domainFilters.Contains(e.ServerIp) || domainFilters.Contains(e.ClientIp));
             }
 
-            // Clear existing statistics
-            _context.ActivityStats.RemoveRange(_context.ActivityStats);
-            _context.AccessStats.RemoveRange(_context.AccessStats);
-            _context.VisitorStats.RemoveRange(_context.VisitorStats);
-            _context.ReferrerStats.RemoveRange(_context.ReferrerStats);
-            _context.BrowserStats.RemoveRange(_context.BrowserStats);
-            _context.ErrorStats.RemoveRange(_context.ErrorStats);
-            await _context.SaveChangesAsync();
+            // Clear existing statistics in batches
+            await ClearStatisticsAsync<ActivityStatistics>(_context.ActivityStats);
+            await ClearStatisticsAsync<AccessStatistics>(_context.AccessStats);
+            await ClearStatisticsAsync<VisitorStatistics>(_context.VisitorStats);
+            await ClearStatisticsAsync<ReferrerStatistics>(_context.ReferrerStats);
+            await ClearStatisticsAsync<BrowserStatistics>(_context.BrowserStats);
+            await ClearStatisticsAsync<ErrorStatistics>(_context.ErrorStats);
 
             // Calculate new statistics
+            System.Console.WriteLine("Calculating new statistics...");
             await CalculateActivityStatisticsAsync(query);
             await CalculateAccessStatisticsAsync(query);
             await CalculateVisitorStatisticsAsync(query);
@@ -192,94 +192,293 @@ namespace IISLogAnalyzer.Core
 
         private async Task CalculateAccessStatisticsAsync(IQueryable<LogEntry> query)
         {
-            var stats = await query
+            const int batchSize = 1000;
+            var processedCount = 0;
+
+            var statsQuery = query
                 .GroupBy(e => new { e.UriStem })
-                .Select(g => new AccessStatistics
+                .Select(g => new
                 {
-                    Page = g.Key.UriStem,
-                    Directory = Path.GetDirectoryName(g.Key.UriStem) ?? string.Empty,
-                    FileType = Path.GetExtension(g.Key.UriStem),
+                    UriStem = g.Key.UriStem,
                     Hits = g.Count(),
                     Bandwidth = g.Sum(e => e.BytesSent + e.BytesReceived),
                     LastAccess = g.Max(e => e.Date)
-                })
-                .ToListAsync();
+                });
 
-            await _context.AccessStats.AddRangeAsync(stats);
-            await _context.SaveChangesAsync();
+            var totalCount = await statsQuery.CountAsync();
+
+            while (processedCount < totalCount)
+            {
+                var batch = await statsQuery
+                    .Skip(processedCount)
+                    .Take(batchSize)
+                    .ToListAsync();
+
+                var stats = batch.Select(g => new AccessStatistics
+                {
+                    Page = g.UriStem ?? string.Empty,
+                    Directory = GetSafeDirectoryName(g.UriStem),
+                    FileType = GetSafeExtension(g.UriStem),
+                    VirtualDomain = string.Empty, // Initialize with empty string
+                    Hits = g.Hits,
+                    Bandwidth = g.Bandwidth,
+                    LastAccess = g.LastAccess
+                }).ToList();
+
+                await _context.AccessStats.AddRangeAsync(stats);
+                await _context.SaveChangesAsync();
+
+                processedCount += batch.Count;
+                System.Console.WriteLine($"Processed {processedCount}/{totalCount} access statistics...");
+            }
+        }
+
+        private string GetSafeDirectoryName(string uriStem)
+        {
+            try
+            {
+                return Path.GetDirectoryName(uriStem ?? string.Empty) ?? string.Empty;
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        private string GetSafeExtension(string uriStem)
+        {
+            try
+            {
+                return Path.GetExtension(uriStem ?? string.Empty);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        private async Task ClearStatisticsAsync<T>(DbSet<T> dbSet) where T : class
+        {
+            const int batchSize = 1000;
+            var itemsRemaining = true;
+
+            while (itemsRemaining)
+            {
+                var batch = await dbSet.Take(batchSize).ToListAsync();
+                if (batch.Count == 0)
+                {
+                    itemsRemaining = false;
+                    continue;
+                }
+
+                dbSet.RemoveRange(batch);
+                await _context.SaveChangesAsync();
+                System.Console.WriteLine($"Cleared {batch.Count} {typeof(T).Name} records...");
+            }
         }
 
         private async Task CalculateVisitorStatisticsAsync(IQueryable<LogEntry> query)
         {
-            var stats = await query
+            const int batchSize = 1000;
+            var processedCount = 0;
+
+            var statsQuery = query
                 .GroupBy(e => e.ClientIp)
-                .Select(g => new VisitorStatistics
+                .Select(g => new
                 {
-                    Host = g.Key,
-                    TopLevelDomain = g.Key.Contains('.') ? g.Key.Substring(g.Key.LastIndexOf('.')) : "",
+                    ClientIp = g.Key,
                     Hits = g.Count(),
                     Bandwidth = g.Sum(e => e.BytesSent + e.BytesReceived),
                     LastVisit = g.Max(e => e.Date)
-                })
-                .ToListAsync();
+                });
 
-            await _context.VisitorStats.AddRangeAsync(stats);
-            await _context.SaveChangesAsync();
+            var totalCount = await statsQuery.CountAsync();
+
+            while (processedCount < totalCount)
+            {
+                var batch = await statsQuery
+                    .Skip(processedCount)
+                    .Take(batchSize)
+                    .ToListAsync();
+
+                var stats = batch.Select(g => new VisitorStatistics
+                {
+                    Host = g.ClientIp ?? string.Empty,
+                    TopLevelDomain = GetTopLevelDomain(g.ClientIp),
+                    Country = string.Empty,
+                    AuthenticatedUser = string.Empty,
+                    Hits = g.Hits,
+                    Bandwidth = g.Bandwidth,
+                    LastVisit = g.LastVisit
+                }).ToList();
+
+                await _context.VisitorStats.AddRangeAsync(stats);
+                await _context.SaveChangesAsync();
+
+                processedCount += batch.Count;
+                System.Console.WriteLine($"Processed {processedCount}/{totalCount} visitor statistics...");
+            }
+        }
+
+        private string GetTopLevelDomain(string ip)
+        {
+            if (string.IsNullOrEmpty(ip) || !ip.Contains('.'))
+                return string.Empty;
+            
+            try
+            {
+                return ip.Substring(ip.LastIndexOf('.'));
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         private async Task CalculateReferrerStatisticsAsync(IQueryable<LogEntry> query)
         {
-            var stats = await query
+            const int batchSize = 1000;
+            var processedCount = 0;
+
+            var statsQuery = query
                 .Where(e => !string.IsNullOrEmpty(e.Referrer))
                 .GroupBy(e => e.Referrer)
-                .Select(g => new ReferrerStatistics
+                .Select(g => new
                 {
-                    Url = g.Key,
-                    Site = new Uri(g.Key).Host,
+                    Referrer = g.Key,
                     Hits = g.Count(),
                     LastReferral = g.Max(e => e.Date)
-                })
-                .ToListAsync();
+                });
 
-            await _context.ReferrerStats.AddRangeAsync(stats);
-            await _context.SaveChangesAsync();
+            var totalCount = await statsQuery.CountAsync();
+
+            while (processedCount < totalCount)
+            {
+                var batch = await statsQuery
+                    .Skip(processedCount)
+                    .Take(batchSize)
+                    .ToListAsync();
+
+                var stats = batch.Select(g => new ReferrerStatistics
+                {
+                    Url = g.Referrer ?? string.Empty,
+                    Site = GetSafeHost(g.Referrer),
+                    SearchEngine = string.Empty,
+                    SearchPhrase = string.Empty,
+                    Hits = g.Hits,
+                    LastReferral = g.LastReferral
+                }).ToList();
+
+                await _context.ReferrerStats.AddRangeAsync(stats);
+                await _context.SaveChangesAsync();
+
+                processedCount += batch.Count;
+                System.Console.WriteLine($"Processed {processedCount}/{totalCount} referrer statistics...");
+            }
+        }
+
+        private string GetSafeHost(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+                return string.Empty;
+
+            try
+            {
+                return new Uri(url).Host;
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         private async Task CalculateBrowserStatisticsAsync(IQueryable<LogEntry> query)
         {
-            var stats = await query
+            const int batchSize = 1000;
+            var processedCount = 0;
+
+            var statsQuery = query
                 .GroupBy(e => e.UserAgent)
-                .Select(g => new BrowserStatistics
+                .Select(g => new
                 {
-                    BrowserType = g.Key,
-                    IsSpider = g.Key.ToLower().Contains("bot") || g.Key.ToLower().Contains("spider"),
+                    UserAgent = g.Key,
                     Hits = g.Count(),
                     LastAccess = g.Max(e => e.Date)
-                })
-                .ToListAsync();
+                });
 
-            await _context.BrowserStats.AddRangeAsync(stats);
-            await _context.SaveChangesAsync();
+            var totalCount = await statsQuery.CountAsync();
+
+            while (processedCount < totalCount)
+            {
+                var batch = await statsQuery
+                    .Skip(processedCount)
+                    .Take(batchSize)
+                    .ToListAsync();
+
+                var stats = batch.Select(g => new BrowserStatistics
+                {
+                    BrowserType = g.UserAgent ?? string.Empty,
+                    Version = string.Empty,
+                    OperatingSystem = string.Empty,
+                    DeviceType = string.Empty,
+                    IsSpider = !string.IsNullOrEmpty(g.UserAgent) &&
+                        (g.UserAgent.ToLower().Contains("bot") || g.UserAgent.ToLower().Contains("spider")),
+                    Hits = g.Hits,
+                    LastAccess = g.LastAccess
+                }).ToList();
+
+                await _context.BrowserStats.AddRangeAsync(stats);
+                await _context.SaveChangesAsync();
+
+                processedCount += batch.Count;
+                System.Console.WriteLine($"Processed {processedCount}/{totalCount} browser statistics...");
+            }
         }
 
         private async Task CalculateErrorStatisticsAsync(IQueryable<LogEntry> query)
         {
-            var stats = await query
+            const int batchSize = 1000;
+            var processedCount = 0;
+
+            var statsQuery = query
                 .Where(e => e.StatusCode >= 400)
                 .GroupBy(e => new { e.StatusCode, e.SubStatusCode, e.Win32Status, e.UriStem })
-                .Select(g => new ErrorStatistics
+                .Select(g => new
                 {
-                    StatusCode = g.Key.StatusCode,
-                    SubStatusCode = g.Key.SubStatusCode,
-                    Win32Status = g.Key.Win32Status,
-                    Page = g.Key.UriStem,
+                    g.Key.StatusCode,
+                    g.Key.SubStatusCode,
+                    g.Key.Win32Status,
+                    UriStem = g.Key.UriStem,
                     Count = g.Count(),
                     LastOccurrence = g.Max(e => e.Date)
-                })
-                .ToListAsync();
+                });
 
-            await _context.ErrorStats.AddRangeAsync(stats);
-            await _context.SaveChangesAsync();
+            var totalCount = await statsQuery.CountAsync();
+
+            while (processedCount < totalCount)
+            {
+                var batch = await statsQuery
+                    .Skip(processedCount)
+                    .Take(batchSize)
+                    .ToListAsync();
+
+                var stats = batch.Select(g => new ErrorStatistics
+                {
+                    StatusCode = g.StatusCode,
+                    SubStatusCode = g.SubStatusCode,
+                    Win32Status = g.Win32Status,
+                    Page = g.UriStem ?? string.Empty,
+                    Referrer = string.Empty,
+                    Count = g.Count,
+                    LastOccurrence = g.LastOccurrence
+                }).ToList();
+
+                await _context.ErrorStats.AddRangeAsync(stats);
+                await _context.SaveChangesAsync();
+
+                processedCount += batch.Count;
+                System.Console.WriteLine($"Processed {processedCount}/{totalCount} error statistics...");
+            }
         }
 
         public async Task GenerateReportAsync()
