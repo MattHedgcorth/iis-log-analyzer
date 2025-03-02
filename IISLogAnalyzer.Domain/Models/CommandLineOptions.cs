@@ -4,8 +4,14 @@ namespace IISLogAnalyzer.Domain.Models
 {
     public class CommandLineOptions
     {
-        [Value(0, Required = true, HelpText = "Comma-delimited list of directories to scan for log files")]
+        [Option('l', Required = true, HelpText = "Comma-delimited list of directories to scan for log files")]
         public string LogFolders { get; set; }
+
+        [Option('r', "recursive", Default = false, HelpText = "Search subdirectories recursively for log files")]
+        public bool Recursive { get; set; }
+
+        [Option('o', "output", HelpText = "Output directory or file path for the report")]
+        public string OutputPath { get; set; }
 
         [Option('e', "extensions", Default = ".log", HelpText = "Comma-delimited list of file extensions to filter log files")]
         public string FileExtensions { get; set; }
@@ -21,5 +27,8 @@ namespace IISLogAnalyzer.Domain.Models
 
         [Option('h', "help", HelpText = "Display parameter descriptions and usage examples")]
         public bool Help { get; set; }
+
+        [Option('d', "debug", Default = false, HelpText = "Display debug information including database location")]
+        public bool Debug { get; set; }
     }
 }

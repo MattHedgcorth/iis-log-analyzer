@@ -14,12 +14,14 @@ namespace IISLogAnalyzer.Core
     public class LogAnalyzer
     {
         private readonly ILogAnalyzerContext _context;
+        private readonly Dictionary<string, int> _fieldIndexes;
         private readonly Regex _logEntryRegex;
 
         public LogAnalyzer(ILogAnalyzerContext context)
         {
             _context = context;
-            _logEntryRegex = new Regex(@"^(\d{4}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})\s(\S+)\s(\S+)\s(\S+)\s(\S+)\s(\d+)\s(\S+)\s(\S+)\s(\S+)\s(\S+)\s(\d+)\s(\d+)\s(\d+)\s(\d+)\s(\d+)\s(\d+)");
+            _fieldIndexes = new Dictionary<string, int>();
+            _logEntryRegex = new Regex(@"^(\S+)", RegexOptions.Compiled);
         }
 
         public async Task ProcessLogFilesAsync(List<string> folders, List<string> extensions, bool forceReload)
@@ -47,36 +49,54 @@ namespace IISLogAnalyzer.Core
         {
             System.Console.WriteLine($"Processing {filePath}...");
             var entries = new List<LogEntry>();
+            bool fieldsFound = false;
 
             foreach (var line in File.ReadLines(filePath))
             {
-                if (line.StartsWith("#") || string.IsNullOrWhiteSpace(line)) continue;
+                if (string.IsNullOrWhiteSpace(line)) continue;
 
-                var match = _logEntryRegex.Match(line);
-                if (!match.Success) continue;
+                // Skip comments except for #Fields directive
+                if (line.StartsWith("#"))
+                {
+                    if (line.StartsWith("#Fields: "))
+                    {
+                        ParseFieldsDirective(line);
+                        fieldsFound = true;
+                    }
+                    continue;
+                }
+
+                if (!fieldsFound)
+                {
+                    System.Console.WriteLine($"Warning: No #Fields directive found in {filePath}. Skipping file.");
+                    break;
+                }
 
                 try
                 {
+                    var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (fields.Length != _fieldIndexes.Count) continue;
+
                     var entry = new LogEntry
                     {
                         FileName = filePath,
-                        Date = DateTime.Parse(match.Groups[1].Value),
-                        Time = match.Groups[2].Value,
-                        ServerIp = match.Groups[3].Value,
-                        Method = match.Groups[4].Value,
-                        UriStem = match.Groups[5].Value,
-                        UriQuery = match.Groups[6].Value,
-                        Port = int.Parse(match.Groups[7].Value),
-                        Username = match.Groups[8].Value,
-                        ClientIp = match.Groups[9].Value,
-                        UserAgent = match.Groups[10].Value,
-                        Referrer = match.Groups[11].Value,
-                        StatusCode = int.Parse(match.Groups[12].Value),
-                        SubStatusCode = int.Parse(match.Groups[13].Value),
-                        Win32Status = int.Parse(match.Groups[14].Value),
-                        TimeTaken = int.Parse(match.Groups[15].Value),
-                        BytesSent = long.Parse(match.Groups[16].Value),
-                        BytesReceived = long.Parse(match.Groups[17].Value)
+                        Date = DateTime.Parse(GetFieldValue(fields, "date")),
+                        Time = GetFieldValue(fields, "time"),
+                        ServerIp = GetFieldValue(fields, "s-ip"),
+                        Method = GetFieldValue(fields, "cs-method"),
+                        UriStem = GetFieldValue(fields, "cs-uri-stem"),
+                        UriQuery = GetFieldValue(fields, "cs-uri-query"),
+                        Port = int.Parse(GetFieldValue(fields, "s-port")),
+                        Username = GetFieldValue(fields, "cs-username"),
+                        ClientIp = GetFieldValue(fields, "c-ip"),
+                        UserAgent = GetFieldValue(fields, "cs(User-Agent)"),
+                        Referrer = GetFieldValue(fields, "cs(Referer)"),
+                        StatusCode = int.Parse(GetFieldValue(fields, "sc-status")),
+                        SubStatusCode = int.Parse(GetFieldValue(fields, "sc-substatus")),
+                        Win32Status = int.Parse(GetFieldValue(fields, "sc-win32-status")),
+                        TimeTaken = int.Parse(GetFieldValue(fields, "time-taken")),
+                        BytesSent = long.Parse(GetFieldValue(fields, "sc-bytes")),
+                        BytesReceived = long.Parse(GetFieldValue(fields, "cs-bytes"))
                     };
 
                     entries.Add(entry);
@@ -99,6 +119,25 @@ namespace IISLogAnalyzer.Core
                 await _context.LogEntries.AddRangeAsync(entries);
                 await _context.SaveChangesAsync();
             }
+        }
+
+        private void ParseFieldsDirective(string line)
+        {
+            _fieldIndexes.Clear();
+            var fields = line.Substring("#Fields: ".Length).Split(' ');
+            for (int i = 0; i < fields.Length; i++)
+            {
+                _fieldIndexes[fields[i].Trim()] = i;
+            }
+        }
+
+        private string GetFieldValue(string[] fields, string fieldName)
+        {
+            if (_fieldIndexes.TryGetValue(fieldName, out int index) && index < fields.Length)
+            {
+                return fields[index] == "-" ? string.Empty : fields[index];
+            }
+            return string.Empty;
         }
 
         public async Task CalculateStatisticsAsync(List<string>? domainFilters = null)

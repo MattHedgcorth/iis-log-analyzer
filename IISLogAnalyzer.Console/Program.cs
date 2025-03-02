@@ -1,4 +1,4 @@
-﻿using CommandLine;
+﻿﻿using CommandLine;
 using IISLogAnalyzer.Core;
 using IISLogAnalyzer.Domain.Models;
 using IISLogAnalyzer.Data;
